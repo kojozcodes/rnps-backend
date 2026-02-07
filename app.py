@@ -2,6 +2,7 @@
 RNPS Mobile App - Flask Backend API with Authentication
 Handles PDF generation for RNPS Record Sheets
 Secure login with password hashing and JWT tokens
+Production-ready version for Railway deployment
 """
 
 from flask import Flask, request, jsonify, send_file
@@ -16,28 +17,40 @@ from io import BytesIO
 import hashlib
 import jwt
 from functools import wraps
-import secrets
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for React frontend
+
+# CORS Configuration - Update with your frontend domain
+ALLOWED_ORIGINS = os.environ.get('ALLOWED_ORIGINS', '*').split(',')
+CORS(app, origins=ALLOWED_ORIGINS, supports_credentials=True)
 
 # Configuration
 TEMPLATE_PDF = 'template_new.pdf'
 
 # Security Configuration
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(32))
-# Password: "Jlpco1" - Change this in production!
-# To generate new hash: python3 -c "import hashlib; print(hashlib.sha256('YOUR_PASSWORD'.encode()).hexdigest())"
-ADMIN_PASSWORD_HASH = os.environ.get('ADMIN_PASSWORD_HASH')
+SECRET_KEY = os.environ.get('SECRET_KEY')
+if not SECRET_KEY:
+    logger.error("SECRET_KEY environment variable not set!")
+    raise ValueError("SECRET_KEY must be set in environment variables")
 
+ADMIN_PASSWORD_HASH = os.environ.get('ADMIN_PASSWORD_HASH')
 if not ADMIN_PASSWORD_HASH:
-    raise ValueError(
-        "ADMIN_PASSWORD_HASH environment variable is required! "
-        "Set it in Railway dashboard under Variables tab."
-    )
+    logger.error("ADMIN_PASSWORD_HASH environment variable not set!")
+    raise ValueError("ADMIN_PASSWORD_HASH must be set in environment variables")
 
 # JWT token expiry (8 hours)
-TOKEN_EXPIRY_HOURS = 8
+TOKEN_EXPIRY_HOURS = int(os.environ.get('TOKEN_EXPIRY_HOURS', '8'))
+
+# Get environment
+FLASK_ENV = os.environ.get('FLASK_ENV', 'production')
 
 
 def token_required(f):
@@ -52,9 +65,11 @@ def token_required(f):
             try:
                 token = auth_header.split(' ')[1]  # Bearer TOKEN
             except IndexError:
+                logger.warning("Invalid token format received")
                 return jsonify({'error': 'Invalid token format'}), 401
         
         if not token:
+            logger.warning("Missing token in request")
             return jsonify({'error': 'Token is missing'}), 401
         
         try:
@@ -62,8 +77,10 @@ def token_required(f):
             data = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])
             request.user_data = data
         except jwt.ExpiredSignatureError:
+            logger.warning("Expired token used")
             return jsonify({'error': 'Token has expired'}), 401
-        except jwt.InvalidTokenError:
+        except jwt.InvalidTokenError as e:
+            logger.warning(f"Invalid token: {str(e)}")
             return jsonify({'error': 'Invalid token'}), 401
         
         return f(*args, **kwargs)
@@ -76,7 +93,14 @@ def login():
     """Authenticate user and return JWT token"""
     try:
         data = request.json
+        
+        if not data:
+            return jsonify({'success': False, 'error': 'No data provided'}), 400
+        
         password = data.get('password', '')
+        
+        if not password:
+            return jsonify({'success': False, 'error': 'Password is required'}), 400
         
         # Hash the provided password
         password_hash = hashlib.sha256(password.encode()).hexdigest()
@@ -89,17 +113,20 @@ def login():
                 'exp': datetime.utcnow() + timedelta(hours=TOKEN_EXPIRY_HOURS)
             }, SECRET_KEY, algorithm='HS256')
             
+            logger.info("Successful login")
+            
             return jsonify({
                 'success': True,
                 'token': token,
                 'expires_in': TOKEN_EXPIRY_HOURS * 3600  # in seconds
             })
         else:
+            logger.warning("Failed login attempt")
             return jsonify({'success': False, 'error': 'Invalid password'}), 401
             
     except Exception as e:
-        print(f"Login error: {str(e)}")
-        return jsonify({'error': f'Login failed: {str(e)}'}), 500
+        logger.error(f"Login error: {str(e)}", exc_info=True)
+        return jsonify({'error': 'Login failed'}), 500
 
 
 @app.route('/health', methods=['GET'])
@@ -108,7 +135,8 @@ def health_check():
     return jsonify({
         'status': 'ok',
         'message': 'RNPS Backend Running',
-        'template_exists': os.path.exists(TEMPLATE_PDF)
+        'template_exists': os.path.exists(TEMPLATE_PDF),
+        'environment': FLASK_ENV
     })
 
 
@@ -140,7 +168,7 @@ def generate_pdf():
                 sig_bytes = base64.b64decode(sig_data)
                 signature_image = Image.open(BytesIO(sig_bytes))
             except Exception as e:
-                print(f"Signature decode error: {e}")
+                logger.warning(f"Signature decode error: {e}")
                 signature_image = None
         
         # Prepare data for PDF generation
@@ -172,21 +200,34 @@ def generate_pdf():
         
         # Generate PDF
         if not os.path.exists(TEMPLATE_PDF):
-            return jsonify({'error': 'Template PDF not found. Please upload template_new.pdf'}), 500
+            logger.error("Template PDF not found")
+            return jsonify({'error': 'Template PDF not found. Please contact administrator.'}), 500
         
         generate_rnps_pdf(pdf_data, output_path, template_path=TEMPLATE_PDF)
         
+        logger.info(f"PDF generated successfully: {filename}")
+        
         # Send PDF file
-        return send_file(
+        response = send_file(
             output_path,
             mimetype='application/pdf',
             as_attachment=True,
             download_name=filename
         )
         
+        # Clean up temp file after sending
+        @response.call_on_close
+        def cleanup():
+            try:
+                os.unlink(output_path)
+            except Exception as e:
+                logger.warning(f"Failed to delete temp file: {e}")
+        
+        return response
+        
     except Exception as e:
-        print(f"Error generating PDF: {str(e)}")
-        return jsonify({'error': f'Failed to generate PDF: {str(e)}'}), 500
+        logger.error(f"Error generating PDF: {str(e)}", exc_info=True)
+        return jsonify({'error': 'Failed to generate PDF. Please try again.'}), 500
 
 
 @app.route('/api/codes/identity', methods=['GET'])
@@ -222,21 +263,38 @@ def get_entitlement_codes():
     return jsonify(codes)
 
 
+@app.errorhandler(404)
+def not_found(error):
+    """Handle 404 errors"""
+    return jsonify({'error': 'Endpoint not found'}), 404
+
+
+@app.errorhandler(500)
+def internal_error(error):
+    """Handle 500 errors"""
+    logger.error(f"Internal error: {str(error)}", exc_info=True)
+    return jsonify({'error': 'Internal server error'}), 500
+
+
 if __name__ == '__main__':
-    print("=" * 60)
-    print("RNPS Mobile Backend Starting")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("RNPS Mobile Backend Starting")
+    logger.info(f"Environment: {FLASK_ENV}")
+    logger.info("=" * 60)
     
     if not os.path.exists(TEMPLATE_PDF):
-        print(f"\n⚠️  WARNING: {TEMPLATE_PDF} not found!")
-        print(f"   Please copy your template PDF to: {os.path.abspath(TEMPLATE_PDF)}")
+        logger.warning(f"⚠️  WARNING: {TEMPLATE_PDF} not found!")
+        logger.warning(f"   Please copy your template PDF to: {os.path.abspath(TEMPLATE_PDF)}")
     else:
-        print(f"✅ Template PDF found: {TEMPLATE_PDF}")
+        logger.info(f"✅ Template PDF found: {TEMPLATE_PDF}")
     
-    print("\nServer running on:")
-    print("  - http://localhost:5000")
-    print("  - http://0.0.0.0:5000")
-    print("\nPress CTRL+C to quit\n")
-    print("=" * 60)
+    # Get port from environment (Railway sets this)
+    port = int(os.environ.get('PORT', 5000))
     
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    logger.info(f"\nServer running on port {port}")
+    logger.info("\nPress CTRL+C to quit\n")
+    logger.info("=" * 60)
+    
+    # For production, use gunicorn instead of app.run
+    # This is just for local testing
+    app.run(host='0.0.0.0', port=port, debug=(FLASK_ENV != 'production'))
