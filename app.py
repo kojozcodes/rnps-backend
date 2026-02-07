@@ -1,6 +1,7 @@
 """
-RNPS Mobile App - Flask Backend API
+RNPS Mobile App - Flask Backend API with Authentication
 Handles PDF generation for RNPS Record Sheets
+Secure login with password hashing and JWT tokens
 """
 
 from flask import Flask, request, jsonify, send_file
@@ -8,16 +9,97 @@ from flask_cors import CORS
 import os
 import tempfile
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta
 from pdf_generator import generate_rnps_pdf
 from PIL import Image
 from io import BytesIO
+import hashlib
+import jwt
+from functools import wraps
+import secrets
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for React frontend
 
 # Configuration
 TEMPLATE_PDF = 'template_new.pdf'
+
+# Security Configuration
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', secrets.token_hex(32))
+# Password: "Jlpco1" - Change this in production!
+# To generate new hash: python3 -c "import hashlib; print(hashlib.sha256('YOUR_PASSWORD'.encode()).hexdigest())"
+ADMIN_PASSWORD_HASH = os.environ.get('ADMIN_PASSWORD_HASH')
+
+if not ADMIN_PASSWORD_HASH:
+    raise ValueError(
+        "ADMIN_PASSWORD_HASH environment variable is required! "
+        "Set it in Railway dashboard under Variables tab."
+    )
+
+# JWT token expiry (8 hours)
+TOKEN_EXPIRY_HOURS = 8
+
+
+def token_required(f):
+    """Decorator to protect routes with JWT authentication"""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = None
+        
+        # Get token from Authorization header
+        if 'Authorization' in request.headers:
+            auth_header = request.headers['Authorization']
+            try:
+                token = auth_header.split(' ')[1]  # Bearer TOKEN
+            except IndexError:
+                return jsonify({'error': 'Invalid token format'}), 401
+        
+        if not token:
+            return jsonify({'error': 'Token is missing'}), 401
+        
+        try:
+            # Decode token
+            data = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])
+            request.user_data = data
+        except jwt.ExpiredSignatureError:
+            return jsonify({'error': 'Token has expired'}), 401
+        except jwt.InvalidTokenError:
+            return jsonify({'error': 'Invalid token'}), 401
+        
+        return f(*args, **kwargs)
+    
+    return decorated
+
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    """Authenticate user and return JWT token"""
+    try:
+        data = request.json
+        password = data.get('password', '')
+        
+        # Hash the provided password
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        
+        # Check if password matches
+        if password_hash == ADMIN_PASSWORD_HASH:
+            # Generate JWT token
+            token = jwt.encode({
+                'user': 'admin',
+                'exp': datetime.utcnow() + timedelta(hours=TOKEN_EXPIRY_HOURS)
+            }, SECRET_KEY, algorithm='HS256')
+            
+            return jsonify({
+                'success': True,
+                'token': token,
+                'expires_in': TOKEN_EXPIRY_HOURS * 3600  # in seconds
+            })
+        else:
+            return jsonify({'success': False, 'error': 'Invalid password'}), 401
+            
+    except Exception as e:
+        print(f"Login error: {str(e)}")
+        return jsonify({'error': f'Login failed: {str(e)}'}), 500
 
 
 @app.route('/health', methods=['GET'])
@@ -31,6 +113,7 @@ def health_check():
 
 
 @app.route('/api/generate-pdf', methods=['POST'])
+@token_required  # Protect this route with authentication
 def generate_pdf():
     """Generate RNPS PDF from form data"""
     try:
