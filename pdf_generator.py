@@ -108,8 +108,8 @@ def create_overlay_pdf(data, output_path):
             try:
                 # Position signature properly above the line
                 # Signature line starts at x=28, so position signature at x=50 to avoid table overlap
-                sig_x = 50
-                sig_y = convert_y(740)  # Higher up to avoid covering table content
+                sig_x = 165
+                sig_y = convert_y(710)  # Higher up to avoid covering table content
                 c.drawImage(temp_path, sig_x, sig_y, width=100, height=35, 
                            preserveAspectRatio=True, mask='auto')
             except Exception as e:
