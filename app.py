@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # CORS Configuration - Update with your frontend domain
-ALLOWED_ORIGINS = os.environ.get('ALLOWED_ORIGINS', '*').split(',')
+ALLOWED_ORIGINS = os.environ.get('ALLOWED_ORIGINS', '').split(',')
 CORS(app, origins=ALLOWED_ORIGINS, supports_credentials=True)
 
 # Configuration
