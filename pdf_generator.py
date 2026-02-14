@@ -91,14 +91,14 @@ def create_overlay_pdf(data, output_path):
     for i, (code, serial) in enumerate(identity_codes[:3]):  # Max 3 rows
         c.drawString(identity_x, row_y_positions[i], code)
         if serial:
-            c.drawString(identity_serial_x, row_y_positions[i], serial[:18])
+            c.drawString(identity_serial_x, row_y_positions[i], serial)
     
     # Write entitlement codes
     entitlement_codes = data.get('entitlement_codes', [])
     for i, (code, serial) in enumerate(entitlement_codes[:3]):  # Max 3 rows
         c.drawString(entitlement_x, row_y_positions[i], code)
         if serial:
-            c.drawString(entitlement_serial_x, row_y_positions[i], serial[:18])
+            c.drawString(entitlement_serial_x, row_y_positions[i], serial)
     
     # ===== SIGNATURE SECTION =====
     signature = data.get('signature')
