@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from pdf_generator import generate_rnps_pdf
 from PIL import Image
 from io import BytesIO
-import hashlib
+import bcrypt
 import jwt
 from functools import wraps
 import logging
@@ -102,11 +102,8 @@ def login():
         if not password:
             return jsonify({'success': False, 'error': 'Password is required'}), 400
         
-        # Hash the provided password
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
-        
-        # Check if password matches
-        if password_hash == ADMIN_PASSWORD_HASH:
+        # Check if password matches using bcrypt
+        if bcrypt.checkpw(password.encode(), ADMIN_PASSWORD_HASH.encode()):
             # Generate JWT token
             token = jwt.encode({
                 'user': 'admin',
